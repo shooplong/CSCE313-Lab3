@@ -25,8 +25,8 @@ int32_t t_create(fptr foo, int32_t arg1, int32_t arg2)
         // find first invalid state so we can start using it
 
         // first need to find first invalid state index in our contexts[] array
-        int firstInvalid = NUM_CTX;
-        for (int i = 0; i < NUM_CTX; i++){
+        volatile int firstInvalid = NUM_CTX;
+        for (volatile int i = 0; i < NUM_CTX; i++){
                 if (contexts[i].state == INVALID){
                         firstInvalid = i;
                         break;
@@ -58,9 +58,54 @@ int32_t t_create(fptr foo, int32_t arg1, int32_t arg2)
 int32_t t_yield()
 {
         // TODO
+        // This function is called by a worker to indicate that it can relinquish the control over to other workers
+        // This function may or may not return in the caller
+        // returns: This function returns the number of contexts (apart from the caller) 
+        // which are in the VALID state if it is successful, otherwise it returns -1
+
+        // first save the current worker's context
+        getcontext(&contexts[current_context_idx].context); // updates the current context (whose index is storeed in current_context_idx)
+        // -- by taking a fresh snapshot using getcontext
+
+        // search for VALID context and use swapcontext to switch to it
+        // swapcontext(ucontext_t* from, ucontext_t* to);
+        for (uint8_t i = 1; i <= NUM_CTX; i++){
+                uint8_t nextValid = (current_context_idx + i) % NUM_CTX; // mod b/c what if we were at context 12 or sum and we need to wrap around to the beginning 
+                if (contexts[nextValid].state == VALID) {
+                        int fromContextIdx = current_context_idx; // this is the one we are switching from
+                        current_context_idx = nextValid; // set the context we are switching TO to the current, b/c current is now set to that next valid one
+                        swapcontext(&contexts[fromContextIdx].context, &contexts[current_context_idx].context);
+                        break; // can break now since we swapped
+                }
+        }
+        // return number of VALID states if successful, if not return -1
+        int32_t numValid = 0;
+        for (int i = 0; i < NUM_CTX; i++){
+                if (contexts[i].state == VALID){
+                        numValid++;
+                }
+        }
+
+        if (numValid > 0) {
+                return (numValid - 1); // return numValid - 1 b/c threading.h says to exclude the caller
+        } else {
+                return -1;
+        }
 }
 
 void t_finish()
 {
         // TODO
+        // this is called by the worker context to indicate that it has completed its work
+        // after this function is called, worker's context is deleted and the worker is never scheduled again. set state to DONE
+
+        // mark current worker to done
+        contexts[current_context_idx].state = DONE; // this is kinda sad :(
+
+        // delete the memory off stack
+        free(contexts[current_context_idx].context.uc_stack.ss_sp); // we prepped this earlier.
+        contexts[current_context_idx].context.uc_stack.ss_sp = NULL;
+
+        // yield control to next worker
+        t_yield();
 }
